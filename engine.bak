@@ -1,0 +1,274 @@
+#lang racket
+
+(require 2htdp/image racket/runtime-path "config.rkt" (prefix-in g: racket/gui/base))
+
+(provide (all-defined-out))
+
+(struct sprite (x y dx dy image type energy))
+(struct world (decor move-robot move-player score-player score-robot with-sound configuration))
+
+(define (DELTA c)
+  (configuration-sprite-size c))
+
+(define (VELOCITY c)
+  (DELTA c))
+
+(define (WIDTH c)
+  (* (configuration-columns-count c) (configuration-sprite-size c)))
+
+(define (HEIGHT c)
+  (* (configuration-rows-count c) (configuration-sprite-size c)))
+
+(define (ENERGY-BOMB c)
+  (configuration-energy-bomb c))
+
+(define (ENERGY-FIRE c)
+  (configuration-energy-fire c))
+
+(define (ENERGY-PLAYER c)
+  (configuration-energy-player c))
+
+(define (ENERGY-ROBOT c)
+  (configuration-energy-robot c))
+
+(define (image-background c)
+  (let ([column (apply above (make-list (quotient (HEIGHT c) (DELTA c)) IMAGE-GRASS))])
+    (apply beside (make-list (quotient (WIDTH c) (DELTA c)) column))))
+
+(define (new-player d c)
+  (let ([sr (sprite-random d IMAGE-EMPTY 'player (ENERGY-PLAYER c) c)])
+    (if (or (empty? sr) (blocked? sr d c))
+        (new-player d c)
+        sr)))
+
+(define (new-robot d c)
+  (let ([sr (sprite-random d IMAGE-EMPTY 'robot (ENERGY-ROBOT c) c)])
+    (if (or (empty? sr) (blocked? sr d c))
+        (new-robot d c)
+        sr)))
+
+(define (image-fire f d c)
+  (let ([dx (sprite-dx f)]
+        [dy (sprite-dy f)]
+        [fire-at-left? (not (empty? (sprite-left f fire? d c)))]
+        [fire-at-right? (not (empty? (sprite-right f fire? d c)))]
+        [fire-at-top? (not (empty? (sprite-up f fire? d c)))]
+        [fire-at-bottom? (not (empty? (sprite-down f fire? d c)))]) 
+    (cond
+      [(and (> dx 0) (= dy 0)
+            (if (and (not fire-at-left?) (not fire-at-right?)) 
+                (load-image-png fire-h-r-image-file)
+                (if (not fire-at-right?)
+                    (load-image-png fire-h-r-image-file)
+                    (load-image-png fire-h-l-image-file))))]
+      [(and (< dx 0) (= dy 0)
+            (if (and (not fire-at-left?) (not fire-at-right?)) 
+                (load-image-png fire-h-l-image-file)
+                (if (not fire-at-left?)
+                    (load-image-png fire-h-l-image-file)
+                    (load-image-png fire-h-r-image-file))))]
+      [(and (= dx 0) (> dy 0)
+            (if (and (not fire-at-top?) (not fire-at-bottom?)) 
+                (load-image-png fire-v-d-image-file)
+                (if (not fire-at-bottom?)
+                    (load-image-png fire-v-d-image-file)
+                    (load-image-png fire-v-u-image-file))))]
+      [(and (= dx 0) (< dy 0)
+            (if (and (not fire-at-top?) (not fire-at-bottom?)) 
+                (load-image-png fire-v-u-image-file)
+                (if (not fire-at-top?)
+                    (load-image-png fire-v-u-image-file)
+                    (load-image-png fire-v-d-image-file))))]
+      [(and (> (abs dx) 0) (= dy 0)) (load-image-png fire-h-image-file)]
+      [(and (= dx 0) (> (abs dy) 0)) (load-image-png fire-v-image-file)]
+      [else (load-image-png fire-c-image-file)])))
+
+(define (distance s1 s2)
+  (let ([x1 (sprite-x s1)]
+        [y1 (sprite-y s1)]
+        [x2 (sprite-x s2)]
+        [y2 (sprite-y s2)])
+    (sqrt (+ (sqr (- x2 x1)) (sqr (- y2 y1))))))
+
+(define (sprite-xy x y d c)
+  (list-ref (list-ref d y) x)
+  
+(define (bomb? s)
+  (equal? (sprite-type s) 'bomb)) 
+
+(define (brick? s)
+  (equal? (sprite-type s) 'brick)) 
+
+(define (rock? s)
+  (equal? (sprite-type s) 'rock)) 
+
+(define (fire? s)
+  (equal? (sprite-type s) 'fire)) 
+
+(define (player? s)
+  (equal? (sprite-type s) 'player)) 
+
+(define (robot? s)
+  (equal? (sprite-type s) 'robot)) 
+
+(define (image-border c)
+  (flatten (append
+            (for/list ([x (in-range 0 (+ (WIDTH c) (DELTA c)) (DELTA c))])
+              (list (sprite x 0 0 0 IMAGE-ROCK 'rock 0)
+                    (sprite x (HEIGHT c) 0 0 IMAGE-ROCK 'rock 0)))
+            (for/list ([y (in-range 0 (+ (HEIGHT c) (DELTA c)) (DELTA c))])
+              (list (sprite 0 y 0 0 IMAGE-ROCK 'rock 0)
+                    (sprite (WIDTH c) y 0 0 IMAGE-ROCK 'rock 0))))))
+
+(define (search-sprite x y test d c)
+  (let ([distance (lambda (x y s)
+                    (let ([x1 (sprite-x s)]
+                          [y1 (sprite-y s)])
+                      (sqrt (+ (sqr (- x x1)) (sqr (- y y1))))))]) 
+    (if (empty? d)
+        '()
+        (if (and (test (first d)) (< (distance x y (first d)) (/ (DELTA c) 2)))
+            (first d)
+            (search-sprite x y test (rest d) c)))))
+
+(define (player d)
+  (if (empty? d)
+      '()
+      (if (equal? (sprite-type (first d)) 'player)
+          (first d)
+          (player (rest d)))))
+
+(define (robot d)
+  (if (empty? d)
+      '()
+      (if (equal? (sprite-type (first d)) 'robot)
+          (first d)
+          (robot (rest d)))))
+
+(define (go-up j d c)
+  (let ([s (sprite-up j (lambda (x) #t) d c)])
+    (if (or (empty? s) (fire? s))
+        (cons (struct-copy sprite j [y (- (sprite-y j) (VELOCITY c))]) 
+              (remove j d))
+        d)))
+
+(define (go-down j d c)
+  (let ([s (sprite-down j (lambda (x) #t) d c)])
+    (if (or (empty? s) (fire? s))
+        (cons (struct-copy sprite j [y (+ (sprite-y j) (VELOCITY c))])
+              (remove j d))
+        d)))
+
+(define (go-left j d c)
+  (let ([s (sprite-left j (lambda (x) #t) d c)])
+    (if (or (empty? s) (fire? s))
+        (cons (struct-copy sprite j [x (- (sprite-x j) (VELOCITY c))]) 
+              (remove j d))
+        d)))
+
+(define (go-right j d c)
+  (let ([s (sprite-right j (lambda (x) #t) d c)])
+    (if (or (empty? s) (fire? s))
+        (cons (struct-copy sprite j [x (+ (sprite-x j) (VELOCITY c))])
+              (remove j d))
+        d)))
+
+(define (explosion? s d c)
+  (or (= (sprite-energy s) 0)
+      (not (empty? (search-sprite (sprite-x s) (sprite-y s) fire? d c)))))
+
+(define (energy0? s)
+  (<= (sprite-energy s) 0))
+
+(define (sprite-left s type d c)
+  (search-sprite (- (sprite-x s) (DELTA c)) (sprite-y s) type d c))
+
+(define (sprite-right s type d c)
+  (search-sprite (+ (sprite-x s) (DELTA c)) (sprite-y s) type d c))
+
+(define (sprite-up s type d c)
+  (search-sprite (sprite-x s) (- (sprite-y s) (DELTA c)) type d c))
+
+(define (sprite-down s type d c)
+  (search-sprite (sprite-x s) (+ (sprite-y s) (DELTA c)) type d c))
+
+(define (blocked? s d c)
+  (and (not (empty? (sprite-left s (lambda (x) #t) d c)))
+       (not (empty? (sprite-right s (lambda (x) #t) d c)))
+       (not (empty? (sprite-up s (lambda (x) #t) d c)))
+       (not (empty? (sprite-down s (lambda (x) #t) d c)))))
+
+(define (sprite-random d image type energy c)
+  (let ([x (* (quotient (random (WIDTH c)) (DELTA c)) (DELTA c))]
+        [y (* (quotient (random (HEIGHT c)) (DELTA c)) (DELTA c))])
+    (if (empty? (search-sprite x y (lambda (x) #t) d c))
+        (sprite x y 0 0 image type energy)     
+        '())))
+
+(define (make-decor d n image find-require type energy c)
+  (let ([sr (sprite-random d image type energy c)])
+    (if (= n 0)
+        d
+        (if (or (empty? sr) 
+                (and find-require (blocked? sr d c))) ; player or robot blocked
+            (make-decor d (if find-require n (- n 1)) image find-require type energy c) ; we search an other solution
+            (make-decor (cons sr d) (- n 1) image find-require type energy c)))))
+
+(define (consume s)
+  (struct-copy sprite s 
+               [energy (if (> (sprite-energy s) 0) 
+                           (- (sprite-energy s) 1)
+                           0)]))
+
+(define (drop-bomb j d c)
+  (if (energy0? j)
+      (cons (sprite (sprite-x j) (sprite-y j) 0 0 (first IMAGES-BOMB) 'bomb (ENERGY-BOMB c)) d)
+      d))
+
+(define (spread-fire s d c)
+  (let ([next (lambda (x y dx dy)
+                (if (not (empty? (search-sprite x y brick? d c)))
+                    (struct-copy sprite s [x x] [y y] [dx dx] [dy dy] [energy 0])
+                    (if (not (empty? (search-sprite x y rock? d c)))
+                        '()
+                        (struct-copy sprite s [x x] [y y] [dx dx] [dy dy]))))])
+    (filter (lambda (x) (not (empty? x)))
+            (if (and (> (sprite-dx s) 0)
+                     (> (sprite-dy s) 0)) ; initial explosion
+                (list
+                 (consume s)
+                 (next (+ (sprite-x s) (DELTA c)) (sprite-y s) 1 0) ; explosion in four directions
+                 (next (- (sprite-x s) (DELTA c)) (sprite-y s) -1 0)
+                 (next (sprite-x s) (+ (sprite-y s) (DELTA c)) 0 1)
+                 (next (sprite-x s) (- (sprite-y s) (DELTA c)) 0 -1))     
+                (cond ; explosion in previous direction
+                  [(> (sprite-dx s) 0) (list (next (+ (sprite-x s) (DELTA c)) (sprite-y s) (sprite-dx s) 0))]
+                  [(< (sprite-dx s) 0) (list (next (- (sprite-x s) (DELTA c)) (sprite-y s) (sprite-dx s) 0))]
+                  [(> (sprite-dy s) 0) (list (next (sprite-x s) (+ (sprite-y s) (DELTA c)) 0 (sprite-dy s)))]
+                  [(< (sprite-dy s) 0) (list (next (sprite-x s) (- (sprite-y s) (DELTA c)) 0 (sprite-dy s)))])))))
+
+(define (tic-tac-bomb b d w)
+  (let ([c (world-configuration w)])
+    (if (explosion? b d c)
+        (begin
+          (if (world-with-sound w) (g:play-sound sound-file true) #t)
+          (sprite (sprite-x b) (sprite-y b) 
+                  1 1 ; indicates the beginning of the deflagration (horizontal and vertical directions)
+                  (image-fire b d c)
+                  'fire 
+                  (ENERGY-FIRE c)))
+        (struct-copy sprite b
+                     [image (if (equal? (sprite-image b) (first IMAGES-BOMB))
+                                (last IMAGES-BOMB)
+                                (first IMAGES-BOMB))]
+                     [energy (- (sprite-energy b) 1)]))))
+
+(define (tic-tac-player-or-robot s d image e)
+  (if (energy0? s)
+      (struct-copy sprite s [image image] [energy 0])
+      (struct-copy sprite s [image (if (> (sprite-energy s) (/ e 2))
+                                       IMAGE-EMPTY ; if it's begining, no image
+                                       (if (equal? (sprite-image s) image) ; after, flashing image
+                                           IMAGE-EMPTY
+                                           image))]
+                   [energy (- (sprite-energy s) 1)])))
